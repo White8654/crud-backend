@@ -1,4 +1,5 @@
 const {  DeleteTableCommand,ListTablesCommand } = require("@aws-sdk/client-dynamodb");
+const { ScanCommand, UpdateCommand, PutCommand, GetCommand } = require("@aws-sdk/lib-dynamodb");
 const { ddbDocClient } = require("./dbconfig");
 const express = require("express");
 const bodyParser = require("body-parser");
@@ -24,6 +25,129 @@ app.use(cors({
   origin: "*",
   methods: ["GET", "POST", "PUT", "DELETE"],
 }));
+
+
+
+
+
+
+
+
+
+
+
+
+const REGISTRY_TABLE_NAME = "TableRegistry";
+
+// Helper function to rename field in a table
+const renameFieldInTableItems = async (tableName, oldFieldName, newFieldName) => {
+  try {
+    // Get all items from the table
+    const data = await ddbDocClient.send(new ScanCommand({ TableName: tableName }));
+    const items = data.Items || [];
+
+    // Iterate through each item and update the field name
+    for (const item of items) {
+      // Copy existing item and rename the field
+      const updatedItem = { ...item };
+      if (item[oldFieldName] !== undefined) {
+        updatedItem[newFieldName] = item[oldFieldName];
+        delete updatedItem[oldFieldName];
+
+        // Update the item in the DynamoDB table
+        await ddbDocClient.send(
+          new UpdateCommand({
+            TableName: tableName,
+            Key: { id: item.id }, // Assuming `id` is the primary key
+            UpdateExpression: `SET #newFieldName = :newValue REMOVE #oldFieldName`,
+            ExpressionAttributeNames: {
+              "#newFieldName": newFieldName,
+              "#oldFieldName": oldFieldName,
+            },
+            ExpressionAttributeValues: {
+              ":newValue": item[oldFieldName],
+            },
+          })
+        );
+      }
+    }
+    console.log(`Field '${oldFieldName}' renamed to '${newFieldName}' in all items of table ${tableName}`);
+  } catch (error) {
+    console.error(`Error renaming field in table ${tableName}:`, error);
+    throw error;
+  }
+};
+
+// Function to rename field in the TableRegistry schema
+const renameFieldInRegistrySchema = async (tableName, oldFieldName, newFieldName) => {
+  try {
+    // Retrieve the schema for the table from the TableRegistry
+    const { Item: schema } = await ddbDocClient.send(
+      new GetCommand({
+        TableName: "TableRegistry",
+        Key: { tableName },
+      })
+    );
+
+    if (!schema) {
+      throw new Error(`No schema found for table ${tableName}`);
+    }
+
+    // Check if the old field name exists in the schema
+    if (!schema.fields[oldFieldName]) {
+      throw new Error(`Field '${oldFieldName}' does not exist in schema for table ${tableName}`);
+    }
+
+    // Rename the field in the schema
+    schema.fields[newFieldName] = { ...schema.fields[oldFieldName] };
+    delete schema.fields[oldFieldName];
+
+    // Update the schema in the TableRegistry
+    await ddbDocClient.send(
+      new PutCommand({
+        TableName: "TableRegistry",
+        Item: {
+          ...schema,
+          lastUpdated: new Date().toISOString(),
+        },
+      })
+    );
+    console.log(`Field '${oldFieldName}' renamed to '${newFieldName}' in schema of table ${tableName}`);
+  } catch (error) {
+    console.error(`Error updating schema in TableRegistry for table ${tableName}:`, error);
+    throw error;
+  }
+};
+
+// Standalone API route to rename field in both items and schema
+app.put("/rename-field", async (req, res) => {
+  const { tableName, oldFieldName, newFieldName } = req.body;
+
+  try {
+    // Step 1: Rename field in all items of the table
+    await renameFieldInTableItems(tableName, oldFieldName, newFieldName);
+
+    // Step 2: Rename field in the schema of the TableRegistry
+    await renameFieldInRegistrySchema(tableName, oldFieldName, newFieldName);
+
+    res.status(200).json({ message: `Field '${oldFieldName}' renamed to '${newFieldName}' in table '${tableName}' and its schema.` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
