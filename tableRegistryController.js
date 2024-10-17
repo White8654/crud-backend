@@ -1,93 +1,207 @@
-const { PutCommand, GetCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 const { CreateTableCommand, DescribeTableCommand } = require("@aws-sdk/client-dynamodb");
+const { PutCommand, GetCommand, ScanCommand, DeleteCommand } = require("@aws-sdk/lib-dynamodb");
 const { ddbDocClient } = require("./dbconfig");
 
-// Initialize TableRegistry
-const initializeTableRegistry = async () => {
+const REGISTRY_TABLE_NAME = "TableRegistry";
+
+// Helper function to create table if it doesn't exist
+const createTableIfNotExists = async (tableName, tableDefinition) => {
   try {
     await ddbDocClient.send(
       new CreateTableCommand({
-        TableName: "TableRegistry",
-        KeySchema: [{ AttributeName: "tableName", KeyType: "HASH" }],
-        AttributeDefinitions: [{ AttributeName: "tableName", AttributeType: "S" }],
-        ProvisionedThroughput: {
-          ReadCapacityUnits: 5,
-          WriteCapacityUnits: 5,
-        },
+        TableName: tableName,
+        KeySchema: tableDefinition.KeySchema,
+        AttributeDefinitions: tableDefinition.AttributeDefinitions,
+        ProvisionedThroughput: tableDefinition.ProvisionedThroughput
       })
     );
-    console.log("TableRegistry created successfully.");
-    await waitForTableToBeActive("TableRegistry");
+    console.log(`Table ${tableName} created successfully.`);
+    
+    // Wait for the table to be active
+    await waitForTableToBeActive(tableName);
   } catch (error) {
-    if (error.name !== "ResourceInUseException") {
+    if (error.name === "ResourceInUseException") {
+      console.log(`Table ${tableName} already exists.`);
+    } else {
+      throw error;
+    }
+  }
+};
+
+// Helper function to wait for a table to become active
+const waitForTableToBeActive = async (tableName) => {
+  let tableActive = false;
+  while (!tableActive) {
+    try {
+      const { Table } = await ddbDocClient.send(
+        new DescribeTableCommand({ TableName: tableName })
+      );
+      tableActive = Table.TableStatus === "ACTIVE";
+      if (!tableActive) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    } catch (error) {
+      console.error(`Error checking table status: ${error}`);
+      throw error;
+    }
+  }
+};
+
+// Initialize the registry table
+const initializeRegistry = async () => {
+  try {
+    await createTableIfNotExists(REGISTRY_TABLE_NAME, {
+      KeySchema: [
+        { AttributeName: "tableName", KeyType: "HASH" },
+        { AttributeName: "alias", KeyType: "RANGE" }
+      ],
+      AttributeDefinitions: [
+        { AttributeName: "tableName", AttributeType: "S" },
+        { AttributeName: "alias", AttributeType: "S" }
+      ],
+      ProvisionedThroughput: {
+        ReadCapacityUnits: 5,
+        WriteCapacityUnits: 5,
+      }
+    });
+  } catch (error) {
+    console.error("Error initializing registry:", error);
+    throw error;
+  }
+};
+
+const createDynamoDBTable = async (tableName, fields) => {
+  const keySchema = [{ AttributeName: "id", KeyType: "HASH" }];
+  const attributeDefinitions = [{ AttributeName: "id", AttributeType: "N" }];
+
+  const params = {
+    TableName: tableName,
+    KeySchema: keySchema,
+    AttributeDefinitions: attributeDefinitions,
+    ProvisionedThroughput: {
+      ReadCapacityUnits: 5,
+      WriteCapacityUnits: 5,
+    }
+  };
+
+  try {
+    await ddbDocClient.send(new CreateTableCommand(params));
+    console.log(`Table ${tableName} created successfully.`);
+    await waitForTableToBeActive(tableName);
+  } catch (error) {
+    if (error.name === "ResourceInUseException") {
+      console.log(`Table ${tableName} already exists.`);
+    } else {
       throw error;
     }
   }
 };
 
 // Register a table schema
-const registerTableSchema = async (tableName, schema) => {
-  await initializeTableRegistry();
-  
-  // Extract field names and types from the first item
-  const tableInfo = {
-    tableName,
-    fields: [
-      { name: 'id', type: 'Number', required: true }, // Default id field
-      ...Object.entries(schema).map(([key, value]) => ({
-        name: key,
-        type: typeof value === 'object' ? 
-          (Array.isArray(value) ? 'Array' : 'Object') : 
-          value.constructor.name,
-        required: false
-      }))
-    ],
-    createdAt: new Date().toISOString(),
-    lastUpdated: new Date().toISOString()
+const registerTableSchema = async (tableName, alias, fields) => {
+  const params = {
+    TableName: REGISTRY_TABLE_NAME,
+    Item: {
+      tableName,
+      alias,
+      fields,
+      createdAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString()
+    }
   };
 
-  await ddbDocClient.send(new PutCommand({
-    TableName: "TableRegistry",
-    Item: tableInfo
-  }));
-
-  return tableInfo;
-};
-
-// Get all registered tables and their schemas
-const getAllTableSchemas = async () => {
   try {
-    const data = await ddbDocClient.send(new ScanCommand({ 
-      TableName: "TableRegistry" 
-    }));
-    return data.Items || [];
+    // Register the schema
+    await ddbDocClient.send(new PutCommand(params));
+    console.log(`Schema registered for table ${tableName} with alias ${alias}`);
+
+    // Create the actual DynamoDB table
+    await createDynamoDBTable(tableName, fields);
   } catch (error) {
-    if (error.name === "ResourceNotFoundException") {
-      return [];
-    }
+    console.error(`Error registering schema for table ${tableName}:`, error);
     throw error;
   }
 };
 
-// Get schema for a specific table
-const getTableSchema = async (tableName) => {
+
+// Get table schema by table name or alias
+const getTableSchema = async (identifier) => {
   try {
-    const data = await ddbDocClient.send(new GetCommand({
-      TableName: "TableRegistry",
-      Key: { tableName }
-    }));
-    return data.Item;
-  } catch (error) {
-    if (error.name === "ResourceNotFoundException") {
-      return null;
+    const params = {
+      TableName: REGISTRY_TABLE_NAME,
+      FilterExpression: "tableName = :tableName OR alias = :alias",
+      ExpressionAttributeValues: {
+        ":tableName": identifier,
+        ":alias": identifier
+      }
+    };
+
+    const result = await ddbDocClient.send(new ScanCommand(params));
+    if (!result.Items || result.Items.length === 0) {
+      throw new Error(`No schema found for identifier: ${identifier}`);
     }
+    return result.Items[0];
+  } catch (error) {
+    console.error(`Error getting schema for ${identifier}:`, error);
     throw error;
   }
 };
+
+// List all registered tables and their schemas
+const listTableSchemas = async () => {
+  try {
+    const result = await ddbDocClient.send(new ScanCommand({
+      TableName: REGISTRY_TABLE_NAME
+    }));
+    return result.Items || [];
+  } catch (error) {
+    console.error("Error listing table schemas:", error);
+    throw error;
+  }
+};
+
+// Update table schema
+const updateTableSchema = async (tableName, updates) => {
+  try {
+    const existingSchema = await getTableSchema(tableName);
+    const params = {
+      TableName: REGISTRY_TABLE_NAME,
+      Item: {
+        ...existingSchema,
+        ...updates,
+        lastUpdated: new Date().toISOString()
+      }
+    };
+    await ddbDocClient.send(new PutCommand(params));
+  } catch (error) {
+    console.error(`Error updating schema for table ${tableName}:`, error);
+    throw error;
+  }
+};
+
+// Delete table schema
+const deleteTableSchema = async (tableName) => {
+  try {
+    await ddbDocClient.send(new DeleteCommand({
+      TableName: REGISTRY_TABLE_NAME,
+      Key: {
+        tableName,
+
+      }
+    }));
+  } catch (error) {
+    console.error(`Error deleting schema for table ${tableName}:`, error);
+    throw error;
+  }
+};
+
+
 
 module.exports = {
+  initializeRegistry,
   registerTableSchema,
-  getAllTableSchemas,
   getTableSchema,
-  initializeTableRegistry
+  listTableSchemas,
+  updateTableSchema,
+  deleteTableSchema
 };
