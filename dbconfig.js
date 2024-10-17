@@ -1,5 +1,5 @@
 // dbconfig.js
-const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const { CreateTableCommand,DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient } = require("@aws-sdk/lib-dynamodb");
 require("dotenv").config();
 
@@ -10,6 +10,8 @@ const ddbClient = new DynamoDBClient({
     secretAccessKey: process.env.SECRET_KEY,
   },
 });
+
+
 
 const marshallOptions = {
   convertEmptyValues: false,
