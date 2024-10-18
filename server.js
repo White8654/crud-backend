@@ -362,8 +362,9 @@ app.put("/item/:tableName/:id", async (req, res) => {
   try {
     const { tableName, id } = req.params;
     const updates = req.body;
+    console.log(updates);
     await updateItem(tableName, parseInt(id), updates);
-    res.status(200).send("Item updated successfully.");
+    res.status(200).json({ message: "Item updated successfully" });
   } catch (error) {
     res.status(500).send(error.message);
   }
@@ -374,7 +375,7 @@ app.delete("/item/:tableName/:id", async (req, res) => {
   try {
     const { tableName, id } = req.params;
     await deleteItem(tableName, parseInt(id));
-    res.status(200).send("Item deleted successfully.");
+    res.status(200).json({ message: "Item deleted successfully" });
   } catch (error) {
     res.status(500).send(error.message);
   }

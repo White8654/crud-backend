@@ -81,18 +81,28 @@ const getItem = async (tableName, id) => {
 };
 
 // Update an item
+
 const updateItem = async (tableName, id, updates) => {
-  const updateExpression = Object.keys(updates)
+  // Exclude 'id' and 'LastUpdated' fields from updates
+  const allowedUpdates = Object.keys(updates).reduce((acc, key) => {
+    if (key !== 'id' && key !== 'LastUpdated') {
+      acc[key] = updates[key];
+    }
+    return acc;
+  }, {});
+
+  // Build the update expression
+  const updateExpression = Object.keys(allowedUpdates)
     .map((key, index) => `#field${index} = :value${index}`)
     .join(", ");
 
-  const expressionAttributeNames = Object.keys(updates).reduce((acc, key, index) => {
+  const expressionAttributeNames = Object.keys(allowedUpdates).reduce((acc, key, index) => {
     acc[`#field${index}`] = key;
     return acc;
   }, {});
 
-  const expressionAttributeValues = Object.keys(updates).reduce((acc, key, index) => {
-    acc[`:value${index}`] = updates[key];
+  const expressionAttributeValues = Object.keys(allowedUpdates).reduce((acc, key, index) => {
+    acc[`:value${index}`] = allowedUpdates[key];
     return acc;
   }, {});
 
@@ -106,6 +116,7 @@ const updateItem = async (tableName, id, updates) => {
       ":lastUpdatedVal": new Date().toISOString(),
     },
   };
+
   await ddbDocClient.send(new UpdateCommand(params));
 };
 
